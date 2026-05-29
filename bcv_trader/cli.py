@@ -17,7 +17,7 @@ import json
 import sys
 from typing import Optional
 
-from . import analytics, catalog
+from . import analytics, catalog, valuation
 from .compliance import (
     APPROVED_BROKERS,
     BainAffiliation,
@@ -183,6 +183,107 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_valuation(args: argparse.Namespace) -> int:
+    snaps = valuation.load_snapshots(args.data)
+    print(f"Valuation context (backward-looking; check 'as of' for staleness):\n")
+    print(f"  {'Sym':<6}{'Metric':<22}{'Current':>9}{'10y mean':>10}{'Dev':>7}  Flag")
+    for s in snaps:
+        print(f"  {s.symbol:<6}{s.metric:<22}{s.current:>9g}{s.ten_year_mean:>10g}"
+              f"{s.deviation_pct * 100:>6.0f}%  {s.flag().value.upper()}")
+    if snaps:
+        print(f"\n  as of: {snaps[0].as_of}  |  source: {snaps[0].source}")
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    horizon = args.horizon
+
+    snaps: dict[str, valuation.ValuationSnapshot] = {}
+    if args.valuation:
+        snaps = {s.symbol.upper(): s for s in valuation.load_snapshots(args.valuation)}
+
+    print("COMPLIANCE-AWARE INVESTMENT ANALYTICS REPORT")
+    print(f"Horizon: {horizon}y   Broker context: {args.broker}\n")
+
+    for sym in symbols:
+        assumption = analytics.INSTRUMENT_ASSUMPTIONS.get(sym)
+        print("=" * 72)
+        if assumption is None:
+            print(f"{sym}: no assumption set on file; add it to "
+                  "INSTRUMENT_ASSUMPTIONS to analyze.\n")
+            continue
+        print(f"{sym} — {assumption.label}")
+        print("=" * 72)
+
+        # 1) Compliance.
+        result = screen_trade(ProposedTrade(symbol=sym, instrument_type=InstrumentType.ETF,
+                                            broker=args.broker))
+        verdict = "PRE-CLEARED" if result.is_clear else result.status.name
+        print(f"COMPLIANCE: {verdict} — diversified pooled fund (ETF); no "
+              "single-name selection; market order, so it bypasses individual "
+              "pre-clearance.")
+        if "QQQ" in sym:
+            print("  ! Caveat: concentrated/sector-tilted (top-10 ~50%); passes the "
+                  "single-name screen but is NOT 'broadly diversified'.")
+        print("  ! Verify against the current restricted/watch list and any "
+              "blackout window before transacting.")
+
+        # 2) Entry (backward-looking valuation context).
+        snap = snaps.get(sym)
+        if snap is not None:
+            print(f"ENTRY (backward-looking): {snap.describe()}")
+        else:
+            print("ENTRY: no valuation data supplied — pass --valuation FILE "
+                  "(e.g. examples/valuation_sample.json) for a fair-value flag.")
+
+        # 3) Return decomposition + fee drag.
+        a = assumption
+        print(f"RETURN DECOMPOSITION (illustrative): income {a.income_yield * 100:.1f}% "
+              f"+ growth {a.earnings_growth * 100:.1f}% + valuation {a.valuation_change * 100:+.1f}% "
+              f"= {a.gross_return * 100:.2f}% gross")
+        print(f"  fee drag {a.fee * 100:.3f}% -> NET {a.net_return * 100:.2f}%   "
+              f"(vol {a.volatility * 100:.1f}%)")
+        if a.note:
+            print(f"  note: {a.note}")
+
+        # 4) Ideal exit = horizon, not a price.
+        print("IDEAL EXIT: holding horizon, not a price target — suited to "
+              f"{max(7, horizon - 3)}-{horizon + 5}y compounding; reassess at a "
+              "rebalance trigger of ±5% from target weight.")
+
+        # 5) Probability of success (lognormal terminal wealth, your formula).
+        tw = analytics.terminal_wealth_lognormal(a.net_return, a.volatility, horizon)
+        b1 = analytics.probability_band(a.net_return, a.volatility, horizon, 1.0)
+        b2 = analytics.probability_band(a.net_return, a.volatility, horizon, 2.0)
+        print(f"PROBABILITY OF SUCCESS ({horizon}y lognormal; mu=ln(1+r)-σ²/2="
+              f"{tw.log_drift:.4f}):")
+        print(f"  P(W_T > 1x) = {tw.p_above_1x * 100:.0f}%  "
+              f"[band {b1[0] * 100:.0f}-{b1[1] * 100:.0f}% under r±1.5%]")
+        print(f"  P(W_T > 2x) = {tw.p_above_2x * 100:.0f}%  "
+              f"[band {b2[0] * 100:.0f}-{b2[1] * 100:.0f}%]")
+        print(f"  terminal multiple p5/p50/p95 = {tw.multiple_p05:.2f}x / "
+              f"{tw.multiple_p50:.2f}x / {tw.multiple_p95:.2f}x")
+        print()
+
+    print("=" * 72)
+    print("MODELS & ASSUMPTIONS")
+    print(f"  CMAs: {analytics.CMA_SOURCES}")
+    print("  Return decomposition: income yield + earnings growth + valuation change "
+          "(Grinold-Kroner building blocks).")
+    print("  Probability: W_T = W_0·exp(N(mu·T, σ²·T)), mu = ln(1+r) − σ²/2, "
+          "r = expected return NET of fees, σ = annualized volatility.")
+    print("  Fee drag is subtracted explicitly (see each NET figure).")
+    print("HONEST CAVEATS")
+    print("  • Probabilities are model-implied under stated assumptions — not "
+          "guaranteed; real outcomes will deviate.")
+    print("  • ENTRY valuation context is backward-looking and (here) illustrative/"
+          "stale — replace with live data before acting.")
+    print("  • This is analytical output, not personalized investment advice. "
+          "Pre-clear and report per policy (BCCS).")
+    return 0
+
+
 def cmd_disclosures(args: argparse.Namespace) -> int:
     start = dt.date.fromisoformat(args.start_date) if args.start_date else dt.date.today()
     print(f"Personal-compliance deadlines for start date {start.isoformat()}:\n")
@@ -249,6 +350,20 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--success", type=float, default=0.90,
                    help="Success-probability threshold for the ideal horizon.")
     a.set_defaults(func=cmd_analyze)
+
+    r = sub.add_parser("report", help="Per-instrument compliance + valuation + "
+                       "probability report.")
+    r.add_argument("--symbols", default="VTI,SPY,QQQ,BND,VXUS",
+                   help="Comma-separated instrument symbols.")
+    r.add_argument("--horizon", type=int, default=10, help="Holding horizon in years.")
+    r.add_argument("--broker", default="Vanguard")
+    r.add_argument("--valuation", help="Path to a valuation JSON for ENTRY flags "
+                   "(e.g. examples/valuation_sample.json).")
+    r.set_defaults(func=cmd_report)
+
+    v = sub.add_parser("valuation", help="Show valuation context from a data file.")
+    v.add_argument("--data", required=True, help="Path to a valuation JSON file.")
+    v.set_defaults(func=cmd_valuation)
 
     d = sub.add_parser("disclosures", help="Show personal-compliance deadlines.")
     d.add_argument("--start-date", help="Start date (YYYY-MM-DD); defaults to today.")

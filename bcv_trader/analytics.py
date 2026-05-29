@@ -56,6 +56,68 @@ CMA: dict[AssetClass, tuple[float, float]] = {
     AssetClass.CASH: (0.030, 0.010),
 }
 
+# How to read / source the assumptions. We do NOT quote any shop's proprietary
+# current numbers verbatim; these are illustrative building-block estimates in
+# the *genre* of published capital-market assumptions. Substitute your house view.
+CMA_SOURCES = (
+    "Illustrative long-run capital-market assumptions, broadly consistent with "
+    "the ranges published by Vanguard (VCMM), BlackRock Investment Institute "
+    "(BII), Research Affiliates (RAFI), and J.P. Morgan (LTCMA). These are not "
+    "live quotes of any provider's proprietary figures -- substitute your "
+    "chosen house view in INSTRUMENT_ASSUMPTIONS / CMA."
+)
+
+
+@dataclass(frozen=True)
+class InstrumentAssumption:
+    """A per-instrument expected-return *decomposition* and risk assumption.
+
+    Equity building-block (Grinold-Kroner style):
+        expected gross return = income_yield + earnings_growth + valuation_change
+
+    For bonds the dominant term is income_yield (~ starting yield-to-maturity).
+    All figures are illustrative long-run assumptions, not forecasts.
+    """
+
+    label: str
+    income_yield: float
+    earnings_growth: float
+    valuation_change: float
+    volatility: float
+    fee: float
+    note: str = ""
+
+    @property
+    def gross_return(self) -> float:
+        return self.income_yield + self.earnings_growth + self.valuation_change
+
+    @property
+    def net_return(self) -> float:
+        return self.gross_return - self.fee
+
+
+# Named ETFs requested for single-instrument analysis. Decompositions are
+# illustrative and deliberately valuation-aware (US large-cap carries a small
+# negative valuation-change term given elevated multiples; ex-US slightly less).
+INSTRUMENT_ASSUMPTIONS: dict[str, InstrumentAssumption] = {
+    "VTI": InstrumentAssumption(
+        "US total-market equity", 0.013, 0.052, -0.005, 0.155, 0.0003,
+        "Broadest US equity exposure (~3,500 holdings)."),
+    "SPY": InstrumentAssumption(
+        "US large-cap (S&P 500)", 0.013, 0.052, -0.007, 0.155, 0.000945,
+        "S&P 500; 0.09% fee is a needless ~6bp/yr drag vs VOO/VTI at 0.03%."),
+    "QQQ": InstrumentAssumption(
+        "US large-cap growth (Nasdaq-100)", 0.006, 0.075, -0.016, 0.200, 0.0020,
+        "Concentrated: ~100 names, tech-heavy, top-10 ~50% of assets."),
+    "BND": InstrumentAssumption(
+        "US investment-grade bonds", 0.043, 0.000, 0.000, 0.050, 0.0003,
+        "Expected return ~ starting yield-to-maturity."),
+    "VXUS": InstrumentAssumption(
+        "International ex-US equity", 0.030, 0.045, -0.005, 0.170, 0.0005,
+        "Higher income yield and cheaper starting valuations than US."),
+}
+
+
 # Short, transparent role descriptions for the building-block "research card".
 ROLE: dict[AssetClass, str] = {
     AssetClass.US_EQUITY: "Core growth engine; equity risk premium",
@@ -237,6 +299,73 @@ def ideal_holding_period(
         if probability_beat_inflation(weights, t, real_cagr_target) >= success_threshold:
             return t
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Single-instrument terminal-wealth (the explicit GBM/lognormal form).         #
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class TerminalWealthResult:
+    years: float
+    expected_return_net: float
+    volatility: float
+    log_drift: float          # mu = ln(1+r) - sigma^2/2
+    p_above_1x: float
+    p_above_2x: float
+    multiple_p05: float
+    multiple_p50: float
+    multiple_p95: float
+
+
+def terminal_wealth_lognormal(
+    expected_return_net: float,
+    volatility: float,
+    years: float = 10.0,
+) -> TerminalWealthResult:
+    """Terminal-wealth distribution using the standard GBM discretization.
+
+        ln(W_T / W_0) ~ Normal(mu * T, sigma^2 * T),   mu = ln(1 + r) - sigma^2 / 2
+
+    where ``r`` is the expected annual return *net of fees* and ``sigma`` the
+    annualized volatility. Returns P(W_T > 1x), P(W_T > 2x), and the 5th/50th/
+    95th-percentile terminal multiples. This is the exact formula specified for
+    the report; it differs marginally from the moment-matched portfolio model
+    above (it treats ``sigma`` as the log-return volatility).
+    """
+
+    mu = math.log(1.0 + expected_return_net) - 0.5 * volatility ** 2
+    dist = NormalDist(mu * years, volatility * math.sqrt(years))
+    return TerminalWealthResult(
+        years=years,
+        expected_return_net=expected_return_net,
+        volatility=volatility,
+        log_drift=mu,
+        p_above_1x=1.0 - dist.cdf(math.log(1.0)),
+        p_above_2x=1.0 - dist.cdf(math.log(2.0)),
+        multiple_p05=math.exp(dist.inv_cdf(0.05)),
+        multiple_p50=math.exp(dist.inv_cdf(0.50)),
+        multiple_p95=math.exp(dist.inv_cdf(0.95)),
+    )
+
+
+def probability_band(
+    expected_return_net: float,
+    volatility: float,
+    years: float,
+    target_multiple: float,
+    return_uncertainty: float = 0.015,
+) -> tuple[float, float]:
+    """A simple 'confidence band' on P(W_T > target) reflecting uncertainty in
+    the expected-return assumption (±``return_uncertainty``). Returns
+    ``(low, high)``. This makes explicit that the probability is only as good as
+    the assumed return."""
+    probs = []
+    for bump in (-return_uncertainty, return_uncertainty):
+        r = expected_return_net + bump
+        mu = math.log(1.0 + r) - 0.5 * volatility ** 2
+        dist = NormalDist(mu * years, volatility * math.sqrt(years))
+        probs.append(1.0 - dist.cdf(math.log(target_multiple)))
+    return (min(probs), max(probs))
 
 
 # --------------------------------------------------------------------------- #

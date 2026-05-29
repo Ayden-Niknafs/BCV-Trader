@@ -87,6 +87,42 @@ class ProbabilityModelTests(unittest.TestCase):
         )
 
 
+class TerminalWealthTests(unittest.TestCase):
+    def test_probabilities_and_percentiles_well_formed(self):
+        tw = analytics.terminal_wealth_lognormal(0.06, 0.15, 10)
+        self.assertTrue(0.0 < tw.p_above_1x < 1.0)
+        self.assertLess(tw.p_above_2x, tw.p_above_1x)  # harder target -> lower P
+        self.assertLess(tw.multiple_p05, tw.multiple_p50)
+        self.assertLess(tw.multiple_p50, tw.multiple_p95)
+
+    def test_positive_drift_more_likely_above_1x_over_time(self):
+        p10 = analytics.terminal_wealth_lognormal(0.06, 0.15, 10).p_above_1x
+        p20 = analytics.terminal_wealth_lognormal(0.06, 0.15, 20).p_above_1x
+        self.assertGreater(p20, p10)
+
+    def test_log_drift_formula(self):
+        import math
+        r, sigma = 0.06, 0.15
+        tw = analytics.terminal_wealth_lognormal(r, sigma, 10)
+        self.assertAlmostEqual(tw.log_drift, math.log(1 + r) - 0.5 * sigma ** 2)
+
+    def test_probability_band_brackets_point_estimate(self):
+        point = analytics.terminal_wealth_lognormal(0.06, 0.15, 10).p_above_1x
+        lo, hi = analytics.probability_band(0.06, 0.15, 10, 1.0, return_uncertainty=0.015)
+        self.assertLess(lo, hi)
+        self.assertLessEqual(lo, point)
+        self.assertGreaterEqual(hi, point)
+
+
+class InstrumentAssumptionTests(unittest.TestCase):
+    def test_decomposition_sums_and_net_of_fee(self):
+        for sym, a in analytics.INSTRUMENT_ASSUMPTIONS.items():
+            self.assertAlmostEqual(
+                a.gross_return, a.income_yield + a.earnings_growth + a.valuation_change, msg=sym
+            )
+            self.assertAlmostEqual(a.net_return, a.gross_return - a.fee, msg=sym)
+
+
 class BuildingBlockTests(unittest.TestCase):
     def test_net_return_is_gross_minus_fee(self):
         for b in analytics.building_blocks(MODEL_PORTFOLIOS["balanced"]):
