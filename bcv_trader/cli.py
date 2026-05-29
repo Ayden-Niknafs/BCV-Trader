@@ -17,7 +17,7 @@ import json
 import sys
 from typing import Optional
 
-from . import analytics, catalog, valuation
+from . import analytics, catalog, momentum, valuation
 from .compliance import (
     APPROVED_BROKERS,
     BainAffiliation,
@@ -284,6 +284,55 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_momentum(args: argparse.Namespace) -> int:
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    prices = momentum.load_prices(args.prices) if args.prices else {}
+    val_flags: dict[str, valuation.ValuationFlag] = {}
+    if args.valuation:
+        val_flags = {s.symbol.upper(): s.flag()
+                     for s in valuation.load_snapshots(args.valuation)}
+
+    print("MOMENTUM / TREND ENTRY SIGNALS (rules-driven, backward-looking)\n")
+    for sym in symbols:
+        st = momentum.compliance_status(sym)
+        print("-" * 72)
+        print(f"{sym} — {momentum.FUND_PROFILE.get(sym).name if sym in momentum.FUND_PROFILE else 'unknown'}")
+        print(f"  1) COMPLIANCE: {st.summary()}")
+        print(f"     structure={st.structure.value}; scope={st.scope.value}; "
+              f"~{st.holdings} holdings; market-order compatible: "
+              f"{'yes' if st.market_order_compatible else 'no'}")
+
+        if not st.trade_call_allowed:
+            print("  2) ENTRY SIGNAL: consult Compliance — narrow-based or "
+                  "non-open-end; NO trade call.")
+            continue
+
+        series = prices.get(sym)
+        if series is None or len(series.closes) < args.long:
+            have = 0 if series is None else len(series.closes)
+            print(f"  2) ENTRY SIGNAL: no/insufficient price data (have {have}, "
+                  f"need >= {args.long}). Supply daily closes via --prices to "
+                  "compute MA/RSI.")
+            continue
+
+        res = momentum.momentum_signals(
+            sym, series.closes, valuation_flag=val_flags.get(sym),
+            short=args.short, long=args.long, rsi_period=args.rsi_period)
+        print(f"  2) ENTRY SIGNAL: {res.summary()}")
+        if series.as_of or series.source:
+            print(f"     price data: as of {series.as_of or '?'} "
+                  f"(source: {series.source or '?'})")
+
+    print("-" * 72)
+    print("Scoring: trend(golden +1/death -1) + RSI(oversold +1/overbought -1) + "
+          "valuation(attractive +1/stretched -1)")
+    print("  => STRONG>=2, FAVORABLE 1, NEUTRAL 0, UNFAVORABLE -1, AVOID<=-2.")
+    print("CAVEATS: signals are mechanical & backward-looking, NOT predictions; "
+          "momentum reverses.\n  Report all executed trades in BCCS within 30 days "
+          "of quarter-end. Not personalized advice.")
+    return 0
+
+
 def cmd_disclosures(args: argparse.Namespace) -> int:
     start = dt.date.fromisoformat(args.start_date) if args.start_date else dt.date.today()
     print(f"Personal-compliance deadlines for start date {start.isoformat()}:\n")
@@ -364,6 +413,16 @@ def build_parser() -> argparse.ArgumentParser:
     v = sub.add_parser("valuation", help="Show valuation context from a data file.")
     v.add_argument("--data", required=True, help="Path to a valuation JSON file.")
     v.set_defaults(func=cmd_valuation)
+
+    mo = sub.add_parser("momentum", help="Rules-driven momentum/trend entry signals.")
+    mo.add_argument("--symbols", default="QQQ,VGT,XLK,XBI,VUG,MTUM,VTI,VXUS,BND",
+                    help="Comma-separated symbols.")
+    mo.add_argument("--prices", help="Path to daily-closes JSON/CSV (oldest first).")
+    mo.add_argument("--valuation", help="Optional valuation JSON to fold into the rating.")
+    mo.add_argument("--short", type=int, default=50, help="Short MA window.")
+    mo.add_argument("--long", type=int, default=200, help="Long MA window.")
+    mo.add_argument("--rsi-period", type=int, default=14, dest="rsi_period")
+    mo.set_defaults(func=cmd_momentum)
 
     d = sub.add_parser("disclosures", help="Show personal-compliance deadlines.")
     d.add_argument("--start-date", help="Start date (YYYY-MM-DD); defaults to today.")

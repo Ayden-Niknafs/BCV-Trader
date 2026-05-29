@@ -39,8 +39,18 @@ python -m bcv_trader build --amount 100000 --risk balanced --broker Vanguard
 python -m bcv_trader screen --symbol AAPL --type individual_equity --broker Robinhood
 python -m bcv_trader brokers
 python -m bcv_trader models
+python -m bcv_trader analyze --risk balanced --target-real 0.04
+python -m bcv_trader report --valuation examples/valuation_sample.json
 python -m bcv_trader disclosures --start-date 2026-05-29
+
+# Momentum/trend entry signals on real prices (fetch fresh data first):
+python scripts/fetch_prices.py --symbols VTI,VXUS,BND,VUG,MTUM --out prices.json
+python -m bcv_trader momentum --prices prices.json --valuation examples/valuation_sample.json
 ```
+
+The momentum command applies the compliance gate first: sector/industry
+(narrow-based) and non-open-end funds return "consult Compliance" with **no**
+trade call; only broad, open-end funds get a signal.
 
 Optionally install it so the `bcv-trader` command is on your PATH:
 
@@ -76,9 +86,19 @@ bcv_trader/
                   # pre-clearance, prohibited practices, disclosure deadlines
   catalog.py      # compliant building blocks (broad-based ETFs/funds) + models
   strategy.py     # builds & screens diversified portfolios; rebalancing
+  analytics.py    # CMAs, MPT stats, lognormal goal-probability, research cards
+  valuation.py    # backward-looking attractive/neutral/stretched flags (supplied data)
+  momentum.py     # compliance gate + 50/200 MA cross, RSI(14), entry rating
   cli.py          # `python -m bcv_trader ...`
+scripts/
+  fetch_prices.py # pull daily closes (Yahoo) into the momentum --prices format
+examples/         # illustrative sample data (clearly marked non-live)
 tests/            # unittest suite (no external deps)
 ```
+
+> Data honesty: the engine never fabricates prices. Valuation/momentum inputs
+> are either supplied by you or fetched live (with `as_of`/source recorded);
+> the bundled `examples/` data is explicitly illustrative and stale.
 
 ## Tests
 
