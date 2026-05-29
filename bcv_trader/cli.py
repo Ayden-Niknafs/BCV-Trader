@@ -17,7 +17,7 @@ import json
 import sys
 from typing import Optional
 
-from . import catalog
+from . import analytics, catalog
 from .compliance import (
     APPROVED_BROKERS,
     BainAffiliation,
@@ -125,6 +125,64 @@ def cmd_screen(args: argparse.Namespace) -> int:
     return 1 if result.requires_preclearance else 0
 
 
+def cmd_analyze(args: argparse.Namespace) -> int:
+    risk = args.risk.lower()
+    if risk not in catalog.MODEL_PORTFOLIOS:
+        print(f"Unknown risk model '{risk}'; choose from "
+              f"{', '.join(catalog.model_names())}.", file=sys.stderr)
+        return 2
+    weights = catalog.MODEL_PORTFOLIOS[risk]
+    stats = analytics.portfolio_stats(weights)
+
+    print(f"ANALYSIS — {risk} model (illustrative long-run assumptions)\n")
+    print(f"Expected return: {stats.expected_return_nominal * 100:.1f}% nominal / "
+          f"{stats.expected_return_real * 100:.1f}% real    "
+          f"Volatility: {stats.volatility * 100:.1f}%    "
+          f"Sharpe (vs cash): {stats.sharpe:.2f}\n")
+
+    # Building blocks, with a live compliance check so the link is explicit.
+    blocks = analytics.building_blocks(weights)
+    all_clear = all(
+        screen_trade(ProposedTrade(symbol=b.symbol, instrument_type=InstrumentType.ETF,
+                                   broker="Vanguard")).is_clear
+        for b in blocks
+    )
+    banner = "all pre-cleared (pooled funds; screened CLEAR)" if all_clear else "REVIEW NEEDED"
+    print(f"Pre-cleared building blocks — {banner}:")
+    print(f"  {'Sym':<6}{'Asset class':<32}{'Gross':>7}{'Fee':>7}{'Net':>7}{'Vol':>7}  Role")
+    for b in blocks:
+        print(f"  {b.symbol:<6}{b.asset_class.value:<32}"
+              f"{b.gross_return * 100:>6.2f}%{b.expense_ratio * 100:>6.2f}%"
+              f"{b.net_return * 100:>6.2f}%{b.volatility * 100:>6.1f}%  {b.role}")
+
+    horizons = [int(h) for h in args.horizons.split(",") if h.strip()]
+    print(f"\nProbability of success by holding horizon "
+          f"(entry = invest now; no market timing):")
+    print(f"  {'Horizon':<9}{'P(no nominal loss)':>20}{'P(beat inflation)':>20}"
+          f"{'P(>= target real)':>20}   Real CAGR p5 / p50 / p95")
+    for t in horizons:
+        p_nom = analytics.probability_at_least(weights, t, 1.0)
+        p_inf = analytics.probability_beat_inflation(weights, t, 0.0)
+        p_tgt = analytics.probability_beat_inflation(weights, t, args.target_real)
+        pct = analytics.terminal_real_cagr_percentiles(weights, t)
+        print(f"  {str(t) + ' yr':<9}{p_nom * 100:>19.0f}%{p_inf * 100:>19.0f}%"
+              f"{p_tgt * 100:>19.0f}%   "
+              f"{pct[0.05] * 100:>5.1f}% / {pct[0.50] * 100:>4.1f}% / {pct[0.95] * 100:>4.1f}%")
+
+    ideal = analytics.ideal_holding_period(weights, args.success, 0.0)
+    ideal_txt = f"{ideal} years" if ideal is not None else f">{40} years"
+    print(f"\nIdeal holding horizon (P(beat inflation) >= {args.success * 100:.0f}%): {ideal_txt}")
+    print("  -> 'Exit' = rebalance / withdraw at your goal date, not at a price target.")
+
+    print("\nModels & assumptions: mean-variance / MPT; CAPM-style risk premia; "
+          "lognormal\nterminal-wealth model. Inflation assumed "
+          f"{analytics.INFLATION * 100:.1f}%. Capital-market assumptions are\n"
+          "illustrative long-run estimates (edit in analytics.py). This is "
+          "educational,\nnot a guarantee or personalized investment advice; "
+          "pre-clear and report per policy.")
+    return 0
+
+
 def cmd_disclosures(args: argparse.Namespace) -> int:
     start = dt.date.fromisoformat(args.start_date) if args.start_date else dt.date.today()
     print(f"Personal-compliance deadlines for start date {start.isoformat()}:\n")
@@ -180,6 +238,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--front-running", action="store_true",
                    help="Overlaps current client activity.")
     s.set_defaults(func=cmd_screen)
+
+    a = sub.add_parser("analyze", help="Expected return, risk, and goal "
+                       "probability for a model portfolio.")
+    a.add_argument("--risk", default="balanced", help="conservative | balanced | aggressive")
+    a.add_argument("--horizons", default="5,10,15,20,30",
+                   help="Comma-separated holding horizons in years.")
+    a.add_argument("--target-real", type=float, default=0.04, dest="target_real",
+                   help="Real CAGR goal to beat (e.g. 0.04 = inflation + 4%%/yr).")
+    a.add_argument("--success", type=float, default=0.90,
+                   help="Success-probability threshold for the ideal horizon.")
+    a.set_defaults(func=cmd_analyze)
 
     d = sub.add_parser("disclosures", help="Show personal-compliance deadlines.")
     d.add_argument("--start-date", help="Start date (YYYY-MM-DD); defaults to today.")
