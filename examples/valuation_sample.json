@@ -1,0 +1,50 @@
+{
+  "_README": "ILLUSTRATIVE valuation inputs only. These are approximate, rounded figures from training-data knowledge (~end-2025), NOT live market data. Directionally reasonable but must be replaced with a current data feed (e.g. fund fact sheets, index provider, or a market-data API) before any real use. 'as_of' makes the staleness explicit.",
+  "instruments": [
+    {
+      "symbol": "VTI",
+      "metric": "Trailing P/E",
+      "current": 24.5,
+      "ten_year_mean": 20.5,
+      "higher_is_cheaper": false,
+      "as_of": "2025-12-31 (approx, illustrative)",
+      "source": "Illustrative training-data approximation; NOT live"
+    },
+    {
+      "symbol": "SPY",
+      "metric": "Trailing P/E",
+      "current": 25.0,
+      "ten_year_mean": 20.0,
+      "higher_is_cheaper": false,
+      "as_of": "2025-12-31 (approx, illustrative)",
+      "source": "Illustrative training-data approximation; NOT live"
+    },
+    {
+      "symbol": "QQQ",
+      "metric": "Trailing P/E",
+      "current": 30.0,
+      "ten_year_mean": 25.0,
+      "higher_is_cheaper": false,
+      "as_of": "2025-12-31 (approx, illustrative)",
+      "source": "Illustrative training-data approximation; NOT live"
+    },
+    {
+      "symbol": "VXUS",
+      "metric": "Trailing P/E",
+      "current": 15.0,
+      "ten_year_mean": 15.5,
+      "higher_is_cheaper": false,
+      "as_of": "2025-12-31 (approx, illustrative)",
+      "source": "Illustrative training-data approximation; NOT live"
+    },
+    {
+      "symbol": "BND",
+      "metric": "30-day SEC yield (%)",
+      "current": 4.3,
+      "ten_year_mean": 2.6,
+      "higher_is_cheaper": true,
+      "as_of": "2025-12-31 (approx, illustrative)",
+      "source": "Illustrative training-data approximation; NOT live"
+    }
+  ]
+}
